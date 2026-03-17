@@ -1,0 +1,107 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - email: string (required)
+    //   - displayName: string (required)
+    //   - createdAt: string (required, immutable)
+    //
+    // Collection: progress
+    // Document ID: {progressId} (format: {userId}_{branch}_{topic})
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - branch: string (required, immutable)
+    //   - topic: string (required, immutable)
+    //   - correctAnswers: number (required)
+    //   - exercisesCompleted: number (required)
+    //   - lastUpdated: string (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['email', 'displayName', 'createdAt']) &&
+             hasRequiredFields(['email', 'displayName', 'createdAt']) &&
+             isValidEmail(data.email) &&
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 100 &&
+             isValidDateString(data.createdAt);
+    }
+
+    function isValidProgress(data) {
+      return hasOnlyAllowedFields(['userId', 'branch', 'topic', 'correctAnswers', 'exercisesCompleted', 'lastUpdated']) &&
+             hasRequiredFields(['userId', 'branch', 'topic', 'correctAnswers', 'exercisesCompleted', 'lastUpdated']) &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
+             data.branch is string && data.branch.size() > 0 && data.branch.size() <= 100 &&
+             data.topic is string && data.topic.size() > 0 && data.topic.size() <= 100 &&
+             data.correctAnswers is number && data.correctAnswers >= 0 &&
+             data.exercisesCompleted is number && data.exercisesCompleted >= 0 &&
+             isValidDateString(data.lastUpdated);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && areImmutableFieldsUnchanged(['createdAt']);
+      allow delete: if false;
+    }
+
+    match /progress/{progressId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid && 
+                    isValidProgress(request.resource.data);
+      allow update: if isAuthenticated() && 
+                    resource.data.userId == request.auth.uid && 
+                    request.resource.data.userId == request.auth.uid && 
+                    isValidProgress(request.resource.data) && 
+                    areImmutableFieldsUnchanged(['userId', 'branch', 'topic']);
+      allow delete: if false;
+    }
+  }
+}
